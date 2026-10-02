@@ -2392,6 +2392,11 @@ TAINT_EXEMPT_TOOLS = {
     "open_in_terminal": "it opens a window, it does not read",
     "open_in_editor": "it opens a window, it does not read",
     "enable_session_inbox": "it edits a settings file, it does not read",
+    "set_volume": "it changes system volume, it does not read",
+    "adjust_volume": "it changes system volume, it does not read",
+    "mute_volume": "it changes system volume, it does not read",
+    "open_app": "it launches an application, it does not read",
+    "quit_app": "it closes an application, it does not read",
     "remember": "it writes a memory, it does not read",
     "project_note": "it writes a note, it does not read",
     "write_journal": "it writes the journal, it does not read",
@@ -4867,6 +4872,53 @@ async def tool_open_in_terminal(args: dict) -> str:
     return f"Terminal's open in {name}, sir."
 
 
+async def tool_set_volume(args: dict) -> str:
+    """Set the system output volume to an absolute level."""
+    raw = args.get("level")
+    try:
+        level = int(raw)
+    except (TypeError, ValueError):
+        return "Give me a number from zero to a hundred, sir."
+    result = await actions.set_volume(level)
+    return result.get("confirmation") or "Done, sir."
+
+
+async def tool_adjust_volume(args: dict) -> str:
+    """Nudge the system output volume up or down by a relative amount."""
+    raw = args.get("delta")
+    try:
+        delta = int(raw)
+    except (TypeError, ValueError):
+        return "By how much, sir?"
+    result = await actions.adjust_volume(delta)
+    return result.get("confirmation") or "Done, sir."
+
+
+async def tool_mute_volume(args: dict) -> str:
+    """Mute or unmute system audio."""
+    muted = bool(args.get("muted", True))
+    result = await actions.mute_volume(muted)
+    return result.get("confirmation") or "Done, sir."
+
+
+async def tool_open_app(args: dict) -> str:
+    """Launch an installed application by name."""
+    name = str(args.get("name") or "").strip()
+    if not name:
+        return "Which application, sir?"
+    result = await actions.open_app(name)
+    return result.get("confirmation") or "Done, sir."
+
+
+async def tool_quit_app(args: dict) -> str:
+    """Quit a running application by name."""
+    name = str(args.get("name") or "").strip()
+    if not name:
+        return "Which application, sir?"
+    result = await actions.quit_app(name)
+    return result.get("confirmation") or "Done, sir."
+
+
 async def tool_enable_session_inbox(args: dict) -> str:
     """Set `"crossSessionInbound": "accept"` in the user's settings.json.
 
@@ -4896,6 +4948,11 @@ TOOL_HANDLERS.update({
     "open_in_browser": tool_open_in_browser,
     "open_in_terminal": tool_open_in_terminal,
     "enable_session_inbox": tool_enable_session_inbox,
+    "set_volume": tool_set_volume,
+    "adjust_volume": tool_adjust_volume,
+    "mute_volume": tool_mute_volume,
+    "open_app": tool_open_app,
+    "quit_app": tool_quit_app,
 })
 # It writes to the user's own Claude Code configuration. Nothing but the
 # user's explicit yes may reach it.
@@ -4903,6 +4960,11 @@ ACTING_TOOLS.add("enable_session_inbox")
 # Both put a window on the user's screen and take their focus to do it. A
 # line in somebody else's transcript must not be able to open anything.
 ACTING_TOOLS.update({"open_in_browser", "open_in_terminal"})
+# System-level actions: volume and launching/quitting apps change the
+# machine state on the user's behalf. A line in somebody else's transcript
+# (a web page, a screenshot, another session) must not be able to reach
+# these — same reasoning as open_in_browser/open_in_terminal above.
+ACTING_TOOLS.update({"set_volume", "adjust_volume", "mute_volume", "open_app", "quit_app"})
 # create_project writes a directory into the user's filesystem and cancel_run
 # kills a process. Both are things JARVIS may only do when the user is the one
 # asking — a line in somebody else's transcript must not reach either.

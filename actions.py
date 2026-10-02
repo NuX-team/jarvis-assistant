@@ -247,6 +247,116 @@ async def open_in_editor(path: str) -> dict:
     }
 
 
+# --- Volume control ---------------------------------------------------
+#
+# `osascript -e "set volume output volume N"` takes 0-100 and is the
+# standard macOS volume control. `set volume output muted` is the separate
+# mute flag — muting does NOT zero the volume number, so "unmute" must
+# clear the flag rather than guess a level.
+
+async def _run_osascript(script: str) -> tuple[bool, str]:
+    proc = await asyncio.create_subprocess_exec(
+        "osascript", "-e", script,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    stdout, stderr = await proc.communicate()
+    return proc.returncode == 0, (stderr.decode(errors="replace") if proc.returncode != 0 else stdout.decode().strip())
+
+
+async def set_volume(level: int) -> dict:
+    """Set system output volume to an absolute 0-100 level, unmuting it."""
+    level = max(0, min(100, int(level)))
+    script = f"set volume output volume {level} set volume output muted false"
+    ok, detail = await _run_osascript(script)
+    if not ok:
+        log.error(f"set_volume failed: {detail}")
+    return {
+        "success": ok,
+        "confirmation": f"Volume's at {level}, sir." if ok else "I couldn't change the volume, sir.",
+    }
+
+
+async def adjust_volume(delta: int) -> dict:
+    """Nudge system output volume up or down by `delta` (can be negative)."""
+    script = (
+        "set cur to output volume of (get volume settings)\n"
+        f"set newVol to cur + ({delta})\n"
+        "if newVol > 100 then set newVol to 100\n"
+        "if newVol < 0 then set newVol to 0\n"
+        "set volume output volume newVol set volume output muted false\n"
+        "return newVol"
+    )
+    ok, detail = await _run_osascript(script)
+    if not ok:
+        log.error(f"adjust_volume failed: {detail}")
+        return {"success": False, "confirmation": "I couldn't change the volume, sir."}
+    return {"success": True, "confirmation": f"Volume's at {detail}, sir."}
+
+
+async def mute_volume(muted: bool = True) -> dict:
+    """Mute or unmute system audio without touching the volume level."""
+    script = f"set volume output muted {'true' if muted else 'false'}"
+    ok, detail = await _run_osascript(script)
+    if not ok:
+        log.error(f"mute_volume failed: {detail}")
+    word = "Muted" if muted else "Unmuted"
+    return {
+        "success": ok,
+        "confirmation": f"{word}, sir." if ok else "I couldn't do that, sir.",
+    }
+
+
+# --- Opening any application ------------------------------------------
+#
+# The user's words: "he should be able to open apps and programs, and get
+# into browsers freely." `open -a "<Name>"` is the standard macOS way to
+# launch an installed application by name without a hard-coded path list —
+# it resolves through Launch Services, so "Spotify", "Notes", "Calculator"
+# all just work if installed. No AppleScript, no shell string: the name is
+# its own argv entry, so it cannot be escaped out of like a quoted
+# AppleScript literal (the same reasoning as `open_in_editor` above).
+
+async def open_app(name: str) -> dict:
+    """Launch an installed application by name via Launch Services."""
+    name = (name or "").strip()
+    if not name:
+        return {"success": False, "confirmation": "Which application, sir?"}
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "open", "-a", name,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _, stderr = await proc.communicate()
+        success = proc.returncode == 0
+    except OSError as e:
+        log.error(f"open_app could not launch: {e}")
+        return {"success": False, "confirmation": f"I couldn't open {name}, sir."}
+    if not success:
+        log.warning(f"open_app '{name}' failed: {stderr.decode(errors='replace')}")
+    return {
+        "success": success,
+        "confirmation": f"Opening {name}, sir." if success else f"I couldn't find {name}, sir.",
+    }
+
+
+async def quit_app(name: str) -> dict:
+    """Quit a running application by name via AppleScript."""
+    name = (name or "").strip()
+    if not name:
+        return {"success": False, "confirmation": "Which application, sir?"}
+    escaped = applescript_escape(name)
+    script = f'tell application "{escaped}" to quit'
+    ok, detail = await _run_osascript(script)
+    if not ok:
+        log.warning(f"quit_app '{name}' failed: {detail}")
+    return {
+        "success": ok,
+        "confirmation": f"Closed {name}, sir." if ok else f"I couldn't close {name}, sir.",
+    }
+
+
 def _generate_project_name(prompt: str) -> str:
     """Generate a kebab-case project folder name from the prompt."""
     # First: check for a quoted name like "tiktok-analytics-dashboard"

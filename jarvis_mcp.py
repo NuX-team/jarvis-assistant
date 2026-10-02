@@ -696,6 +696,81 @@ TOOL_SPECS = [
             "required": ["text"],
         },
     },
+    {
+        "name": "set_volume",
+        "description": (
+            "Set the Mac's system output volume to an absolute level, 0 to 100, "
+            "and unmute it. Use this for 'set volume to 40' or 'turn it up to half'. "
+            "For 'turn it up'/'turn it down' with no number, use adjust_volume "
+            "instead."),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "level": {"type": "integer",
+                          "description": "Target volume, 0-100."},
+            },
+            "required": ["level"],
+        },
+    },
+    {
+        "name": "adjust_volume",
+        "description": (
+            "Nudge the Mac's system output volume up or down by a relative amount. "
+            "Use this for 'turn it up', 'turn it down a bit', 'volume up' — anything "
+            "without a specific target number. Positive raises it, negative lowers "
+            "it; 10 is a reasonable default step when the user gives no amount."),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "delta": {"type": "integer",
+                          "description": ("Change to apply, e.g. 10 for 'up a bit', "
+                                          "-15 for 'down a bit'.")},
+            },
+            "required": ["delta"],
+        },
+    },
+    {
+        "name": "mute_volume",
+        "description": (
+            "Mute or unmute the Mac's system audio without changing the volume "
+            "level. Use for 'mute', 'be quiet', 'unmute', 'turn the sound back on'."),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "muted": {"type": "boolean",
+                          "description": "True to mute, false to unmute. Defaults to true."},
+            },
+        },
+    },
+    {
+        "name": "open_app",
+        "description": (
+            "Launch an installed application by name — Spotify, Notes, Calculator, "
+            "Safari, any app on the Mac. Use this for 'open X' / 'start X' when X is "
+            "an application rather than a web page or a project. For a web address "
+            "use open_in_browser instead."),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string",
+                         "description": "The application's name, as the user said it."},
+            },
+            "required": ["name"],
+        },
+    },
+    {
+        "name": "quit_app",
+        "description": (
+            "Quit a running application by name. Use for 'close X', 'quit X'."),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string",
+                         "description": "The application's name, as the user said it."},
+            },
+            "required": ["name"],
+        },
+    },
 ]
 
 
