@@ -6783,7 +6783,7 @@ async def voice_handler(ws: WebSocket):
                     await speech.user_interim(text)
                 _enqueue(queue, {"type": "transcript_echo", "text": text, "isFinal": False})
 
-            async def _on_final(text: str) -> None:
+            async def _dispatch_text(text: str) -> None:
                 text = apply_speech_corrections(text.strip())
                 if not text or speech is None:
                     return
@@ -6803,10 +6803,20 @@ async def voice_handler(ws: WebSocket):
                     return
                 _spawn(_handle_utterance(text))
 
+            async def _on_final(text: str) -> None:
+                await _dispatch_text(text)
+
+            async def _on_early(text: str) -> None:
+                # The brain starts on the first words, before the user has
+                # finished speaking — see GeminiTranscriber early start.
+                log.info(f"early start: {text[:80]}")
+                await _dispatch_text(text)
+
             async def _on_transcribe_error(msg: str) -> None:
                 log.warning(f"terminal transcription: {msg}")
 
-            transcriber = gemini_transcribe.GeminiTranscriber(_on_interim, _on_final, _on_transcribe_error)
+            transcriber = gemini_transcribe.GeminiTranscriber(
+                _on_interim, _on_final, _on_transcribe_error, on_early=_on_early)
             if not await transcriber.start():
                 _enqueue(queue, {"type": "text",
                                  "text": "I couldn't reach speech transcription, sir — "

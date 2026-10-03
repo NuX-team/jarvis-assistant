@@ -47,6 +47,31 @@ def _configured_langs() -> list[str]:
     return [raw]
 
 
+def _early_ms() -> int:
+    """How long the transcript must hold still before the brain starts on it.
+    0 turns early start off (wait for the end-of-speech signal, as before)."""
+    try:
+        return max(0, int(os.getenv("JARVIS_EARLY_START_MS", "600")))
+    except ValueError:
+        return 600
+
+
+EARLY_MIN_WORDS = 3
+# What the brain is told about words that arrive after it already started.
+ADDENDUM_PREFIX = "(addition to my previous request) "
+
+
+def merge_chunk(current: str, chunk: str) -> str:
+    """Live transcription can arrive as the full text so far OR as a new
+    fragment. If the chunk extends what we have, it replaces it; otherwise it
+    is appended — so neither style loses the start of the sentence."""
+    if not current:
+        return chunk
+    if chunk.startswith(current) or chunk.strip() == current.strip():
+        return chunk
+    return current + chunk
+
+
 def api_key_configured() -> bool:
     return bool(os.getenv("GEMINI_API_KEY", "").strip())
 
@@ -67,7 +92,11 @@ class GeminiTranscriber:
         on_interim: Callable[[str], Awaitable[None]],
         on_final: Callable[[str], Awaitable[None]],
         on_error: Callable[[str], Awaitable[None]],
+        on_early: Optional[Callable[[str], Awaitable[None]]] = None,
     ):
+        self._on_early = on_early
+        self._early_task: Optional[asyncio.Task] = None
+        self._committed = ""          # text the brain has already started on
         self._on_interim = on_interim
         self._on_final = on_final
         self._on_error = on_error
@@ -136,19 +165,66 @@ class GeminiTranscriber:
                     continue
                 transcription = getattr(content, "input_transcription", None)
                 if transcription is not None and transcription.text:
-                    self._last_text = transcription.text
+                    self._last_text = merge_chunk(self._last_text, transcription.text)
                     await self._on_interim(self._last_text)
+                    self._arm_early()
                 if getattr(content, "turn_complete", False) and self._last_text.strip():
                     final = self._last_text
                     self._last_text = ""
-                    await self._on_final(final)
+                    await self._finish_turn(final)
         except asyncio.CancelledError:
             raise
         except Exception as e:
             log.warning(f"Gemini transcribe receive loop ended: {e}")
             await self._on_error("the Gemini connection dropped")
 
+    # -- Early start ----------------------------------------------------------
+    #
+    # The end-of-speech signal arrives after the user has stopped AND a pause
+    # has elapsed, so waiting for it costs the whole tail of every command.
+    # Instead: once the transcript has held still for `_early_ms()` and has
+    # enough words to be a task, hand it to the brain while the user may still
+    # be finishing. Words that come after are sent as an addendum.
+
+    def _arm_early(self) -> None:
+        delay = _early_ms()
+        if self._on_early is None or delay <= 0 or self._committed:
+            return
+        if self._early_task is not None:
+            self._early_task.cancel()
+        self._early_task = asyncio.create_task(self._early_after(delay / 1000.0))
+
+    async def _early_after(self, delay: float) -> None:
+        try:
+            await asyncio.sleep(delay)
+        except asyncio.CancelledError:
+            return
+        text = self._last_text.strip()
+        if self._committed or len(text.split()) < EARLY_MIN_WORDS:
+            return
+        self._committed = text
+        try:
+            await self._on_early(text)
+        except Exception as e:
+            log.warning(f"early start failed: {e}")
+
+    async def _finish_turn(self, final: str) -> None:
+        if self._early_task is not None:
+            self._early_task.cancel()
+            self._early_task = None
+        committed, self._committed = self._committed, ""
+        if not committed:
+            await self._on_final(final)
+            return
+        final = final.strip()
+        rest = final[len(committed):].strip() if final.startswith(committed) else ""
+        if len(rest.split()) >= 2:
+            await self._on_final(ADDENDUM_PREFIX + rest)
+
     async def stop(self) -> None:
+        if self._early_task is not None:
+            self._early_task.cancel()
+            self._early_task = None
         if self._receive_task is not None:
             self._receive_task.cancel()
             try:
