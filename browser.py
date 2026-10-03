@@ -68,6 +68,7 @@ class JarvisBrowser:
         self._pw = None
         self._browser = None
         self._context = None
+        self._driven_page = None
 
     async def _ensure_browser(self):
         """Launch browser if not running."""
@@ -261,6 +262,89 @@ class JarvisBrowser:
             self._pw = None
             self._browser = None
             self._context = None
+            self._driven_page = None
+
+    # -- Interactive driving (click/type/navigate on one live page) -----------
+    #
+    # The user asked for JARVIS to "control" the browser, not just open a URL
+    # and read it: click things, type into fields, go to a new address, all
+    # on the SAME visible tab across several voice turns, so the user watches
+    # one continuous session rather than a fresh window per action. This is
+    # a single page (`self._driven_page`), separate from `_new_page()`'s
+    # throwaway tabs used by search/visit/screenshot, created lazily on the
+    # first drive_* call and reused until `close()` or `drive_navigate` is
+    # told to open a NEW tab.
+
+    async def _driven(self):
+        if self._driven_page is None or self._driven_page.is_closed():
+            self._driven_page = await self._new_page()
+        return self._driven_page
+
+    async def drive_navigate(self, url: str) -> str:
+        """Go to `url` on the driven tab. Returns the page title."""
+        page = await self._driven()
+        await page.goto(url, wait_until="domcontentloaded", timeout=TIMEOUT_MS)
+        await page.wait_for_timeout(150)
+        return await page.title()
+
+    async def drive_back(self) -> str:
+        page = await self._driven()
+        await page.go_back(wait_until="domcontentloaded", timeout=TIMEOUT_MS)
+        return await page.title()
+
+    async def drive_click(self, text: str) -> str:
+        """Click the first visible element whose text/label/placeholder/
+        aria-label matches `text` (case-insensitive, partial match) —
+        covers buttons, links, and labelled inputs without the caller
+        needing to know CSS selectors."""
+        page = await self._driven()
+        locator = page.get_by_text(text, exact=False).first
+        try:
+            await locator.wait_for(state="visible", timeout=3000)
+        except Exception:
+            # Fall back to role-based matching (buttons/links without
+            # exact visible text, e.g. an icon button with an aria-label).
+            locator = page.get_by_role("button", name=text, exact=False).first
+            try:
+                await locator.wait_for(state="visible", timeout=3000)
+            except Exception:
+                raise PageError(f"couldn't find anything on the page matching {text!r}")
+        await locator.click(timeout=5000)
+        await page.wait_for_timeout(100)
+        return await page.title()
+
+    async def drive_type(self, text: str, into: str = "") -> str:
+        """Type `text` into the field identified by `into` (its label,
+        placeholder, or aria-label), or into whatever is currently focused
+        if `into` is empty."""
+        page = await self._driven()
+        if into:
+            locator = page.get_by_label(into, exact=False).first
+            try:
+                await locator.wait_for(state="visible", timeout=3000)
+            except Exception:
+                locator = page.get_by_placeholder(into, exact=False).first
+                await locator.wait_for(state="visible", timeout=3000)
+            await locator.fill(text, timeout=5000)
+        else:
+            await page.keyboard.type(text)
+        return await page.title()
+
+    async def drive_scroll(self, direction: str = "down") -> None:
+        page = await self._driven()
+        amount = 600 if direction == "down" else -600
+        await page.mouse.wheel(0, amount)
+
+    async def drive_read(self) -> "PageText":
+        """What's on the driven tab right now — same shape as read_page,
+        but against the live interactive session rather than a throwaway
+        headless tab."""
+        page = await self._driven()
+        data = await page.evaluate(_EXTRACT_JS, PAGE_TEXT_CHARS)
+        text = str(data.get("text") or "")
+        full = int(data.get("full") or len(text))
+        return PageText(title=str(data.get("title") or ""), url=page.url,
+                        text=text, char_count=full, truncated=full > len(text))
 
 
 # ---------------------------------------------------------------------------

@@ -60,6 +60,7 @@ ALLOWED_TOOLS = [
     "mcp__jarvis__open_in_terminal",
     "mcp__jarvis__read_page",
     "mcp__jarvis__look_at_page",
+    "mcp__jarvis__browse",
     "mcp__jarvis__what_is_on_screen",
     "mcp__jarvis__look_at_screen",
     "mcp__jarvis__github_repo",

@@ -1829,6 +1829,11 @@ async def lifespan(application: FastAPI):
 
     await stop_session_watcher()
     await stop_brain_and_speech()
+    if _driven_browser is not None:
+        try:
+            await _driven_browser.close()
+        except Exception:
+            log.warning("driven browser close failed", exc_info=True)
 
 
 # The interactive OpenAPI console is a "Try it out" button on every route
@@ -5831,6 +5836,87 @@ TOOL_HANDLERS.update({
 # They reach out to a network address built from a model's output. Only the
 # user may point JARVIS at a host — see the note above.
 ACTING_TOOLS.update({"read_page", "look_at_page"})
+
+
+# ---------------------------------------------------------------------------
+# Driving a live browser tab: open, click, type, scroll, back, read
+# ---------------------------------------------------------------------------
+#
+# "Control the browser" — one visible tab that stays open across turns, so the
+# user watches ONE continuous session. A single tool with an `action` rather
+# than six tools: six descriptions cost the brain context on every turn.
+# Every action returns the page's text (wrapped as untrusted, same as
+# `read_page`), so the brain sees the result of its click without a second
+# call — that is what makes it fast.
+
+BROWSE_ACTIONS = ("open", "click", "type", "scroll", "back", "read")
+_driven_browser = None
+
+
+def _get_driven_browser():
+    global _driven_browser
+    if _driven_browser is None:
+        _driven_browser = browser.JarvisBrowser()
+    return _driven_browser
+
+
+async def tool_browse(args: dict) -> str:
+    """Act on the one live browser tab and report what is on it now."""
+    action = str(args.get("action") or "").strip().lower()
+    if action not in BROWSE_ACTIONS:
+        return (f"Browse how, sir? One of: {', '.join(BROWSE_ACTIONS)}.")
+    drv = _get_driven_browser()
+    try:
+        if action == "open":
+            url, refusal = _web_url_or_refusal(args)
+            if refusal:
+                return refusal
+            await asyncio.wait_for(drv.drive_navigate(url), PAGE_DEADLINE_SEC)
+        elif action == "click":
+            target = str(args.get("target") or "").strip()
+            if not target:
+                return "Click what, sir?"
+            await asyncio.wait_for(drv.drive_click(target), PAGE_DEADLINE_SEC)
+        elif action == "type":
+            text = str(args.get("text") or "")
+            if not text:
+                return "Type what, sir?"
+            await asyncio.wait_for(
+                drv.drive_type(text, str(args.get("target") or "").strip()),
+                PAGE_DEADLINE_SEC)
+            if args.get("submit"):
+                page = await drv._driven()
+                await page.keyboard.press("Enter")
+                await page.wait_for_timeout(300)
+        elif action == "scroll":
+            direction = "up" if str(args.get("direction")).lower() == "up" else "down"
+            await asyncio.wait_for(drv.drive_scroll(direction), PAGE_DEADLINE_SEC)
+        elif action == "back":
+            await asyncio.wait_for(drv.drive_back(), PAGE_DEADLINE_SEC)
+        page = await asyncio.wait_for(drv.drive_read(), PAGE_DEADLINE_SEC)
+    except asyncio.TimeoutError:
+        return "That took too long, sir — I've given up on it."
+    except browser.PageError as e:
+        return f"No luck there, sir — {e}."
+    except Exception as e:
+        log.warning("browse %s failed: %s", action, e)
+        return f"I couldn't do that in the browser, sir — {type(e).__name__}."
+
+    header = _sanitised_url(page.url)
+    if page.char_count > PAGE_TEXT_BUDGET:
+        header += f" — {page.char_count} characters in all; this is the top of it"
+    body = f"Title: {page.title}\n\n{page.text}" if page.title else page.text
+    return f"Done. Now on {header}:\n{_wrap_untrusted(_PAGE_WRAP_NAME, body)}"
+
+
+TOOL_HANDLERS["browse"] = tool_browse
+ACTING_TOOLS.add("browse")
+TAINTING_TOOLS["browse"] = "a web page"
+# `browse` must survive the turn it taints, or "open it, then click" — the whole
+# feature — would refuse on its second step. The risk is bounded: it drives a
+# fresh Chromium with no cookies or logins, http(s) only, and it still needs
+# an origin of "user" to start.
+UNTRUSTED_READING_TOOLS.add("browse")
 
 
 # ---------------------------------------------------------------------------

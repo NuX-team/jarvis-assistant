@@ -62,6 +62,7 @@ def test_command_has_exact_flags(tmp_path):
         "mcp__jarvis__list_projects,"
         "mcp__jarvis__open_in_browser,mcp__jarvis__open_in_terminal,"
         "mcp__jarvis__read_page,mcp__jarvis__look_at_page,"
+        "mcp__jarvis__browse,"
         "mcp__jarvis__what_is_on_screen,mcp__jarvis__look_at_screen,"
         "mcp__jarvis__github_repo,"
         "mcp__jarvis__usage_status,mcp__jarvis__connections,"
@@ -70,6 +71,8 @@ def test_command_has_exact_flags(tmp_path):
         "mcp__jarvis__read_file,mcp__jarvis__open_in_editor,"
         "mcp__jarvis__remember,mcp__jarvis__recall,"
         "mcp__jarvis__project_note,mcp__jarvis__write_journal,"
+        "mcp__jarvis__set_volume,mcp__jarvis__adjust_volume,"
+        "mcp__jarvis__mute_volume,mcp__jarvis__open_app,mcp__jarvis__quit_app,"
         # The CLI's own two, and the only built-ins here: without them JARVIS
         # can read a page he was given the address of and find nothing.
         "WebSearch,WebFetch")

@@ -210,7 +210,7 @@ def test_the_reader_set_is_every_acting_tool_that_only_reads(wired):
     server = wired
     assert server.UNTRUSTED_READING_TOOLS == {
         "read_page", "look_at_page", "github_repo",
-        "look_at_screen", "what_is_on_screen"}
+        "look_at_screen", "what_is_on_screen", "browse"}  # browse: see server.py
     assert server.UNTRUSTED_READING_TOOLS <= server.ACTING_TOOLS, \
         "a name in here that is not an acting tool gates nothing and is a typo"
     for writer in ("remember", "project_note", "write_journal", "spawn_run",

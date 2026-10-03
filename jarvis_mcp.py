@@ -360,6 +360,29 @@ TOOL_SPECS = [
         },
     },
     {
+        "name": "browse",
+        "description": (
+            "Drive ONE live browser tab the user is watching. action: open "
+            "(url), click (target = visible text/label), type (text, optional "
+            "target = field label, submit=true presses Enter), scroll "
+            "(direction up/down), back, read. Every action returns the page's "
+            "text, so you see the result at once — chain actions without "
+            "asking. Do it immediately when told; no confirmation."),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "action": {"type": "string",
+                           "enum": ["open", "click", "type", "scroll", "back", "read"]},
+                "url": {"type": "string"},
+                "target": {"type": "string"},
+                "text": {"type": "string"},
+                "submit": {"type": "boolean"},
+                "direction": {"type": "string", "enum": ["up", "down"]},
+            },
+            "required": ["action"],
+        },
+    },
+    {
         "name": "look_at_page",
         "description": (
             "SEE a page: a screenshot comes back as an actual image you can "
