@@ -82,6 +82,7 @@ import web_auth
 from run_executor import RunExecutor
 import data_paths
 import dialog
+import gemini_transcribe
 import jarvis_memory
 import notifier
 import tts
@@ -611,13 +612,23 @@ async def _voice_emit(msg: dict) -> None:
 
 
 async def _synth_for_speech(text: str) -> Optional[bytes]:
-    r = await tts.synthesize_chunk(text, api_key=FISH_API_KEY, voice_id=FISH_VOICE_ID, client=_tts_client)
-    if r is None:
-        return None
-    _session_tokens["tts_calls"] += 1
-    _append_usage_entry(0, 0, "tts")
-    log.debug(f"tts: {len(text)} chars, first byte {r.first_byte_sec:.2f}s, total {r.total_sec:.2f}s")
-    return r.audio
+    """Fish Audio when configured and funded, else a free local voice.
+
+    Fish Audio's API needs a funded balance (the free web-app tier's credits
+    don't carry over to API access), so a configured-but-empty account fails
+    every call the same way a missing key does — both fall through to
+    edge-tts here rather than going mute.
+    """
+    if FISH_API_KEY:
+        r = await tts.synthesize_chunk(text, api_key=FISH_API_KEY, voice_id=FISH_VOICE_ID, client=_tts_client)
+        if r is not None:
+            _session_tokens["tts_calls"] += 1
+            _append_usage_entry(0, 0, "tts")
+            log.debug(f"tts: {len(text)} chars, first byte {r.first_byte_sec:.2f}s, total {r.total_sec:.2f}s")
+            return r.audio
+        log.warning("Fish Audio TTS failed (missing balance/network?) — using free voice")
+    import free_tts
+    return await free_tts.synthesize_free(text)
 
 
 def _fmt_reset(ts) -> str:
@@ -6638,6 +6649,8 @@ async def voice_handler(ws: WebSocket):
         {"type": "transcript", "text": "...", "isFinal": true}
         {"type": "interim", "text": "..."}          partial recognition, throttled
         {"type": "played", "utt": 3, "idx": 1}      one audio chunk finished playing
+        <binary frame>                               raw PCM16/16kHz mic audio —
+                                                       terminal client only (see below)
 
     Server -> Client:
         {"type": "config", "muteMicDuringSpeech": false}
@@ -6646,12 +6659,26 @@ async def voice_handler(ws: WebSocket):
         {"type": "drop_queued"}                      keep the playing chunk, drop the rest
         {"type": "status", "state": "thinking"|"speaking"|"idle"}
         {"type": "text", "text": "..."}              a chunk TTS could not voice
+        {"type": "transcript_echo", "text": "...", "isFinal": bool}
+                                                       terminal client only — what the
+                                                       server-side Gemini transcriber
+                                                       heard, echoed back for display
+
+    `?mode=terminal` on the connection URL: the browser client does its own
+    speech recognition (Web Speech API) and sends "transcript"/"interim"
+    text frames. The terminal client (jarvis_cli.py) has no browser
+    SpeechRecognition to lean on, so in this mode the server runs Gemini 3.5
+    Transcribe itself on whatever raw PCM16 binary frames arrive, and feeds
+    the SAME speech.user_interim/user_final pipeline the browser's own
+    transcripts go through — one scheduler, two ways to reach it.
 
     Run lifecycle events are published on /ws/runs, not here.
     """
     await ws.accept()
     queue = _add_voice_client(ws)
-    log.info("Voice WebSocket connected")
+    terminal_mode = ws.query_params.get("mode") == "terminal"
+    transcriber: Optional[gemini_transcribe.GeminiTranscriber] = None
+    log.info(f"Voice WebSocket connected{' (terminal mode)' if terminal_mode else ''}")
     try:
         # Through this client's own queue, not straight down the socket, so
         # the opening frames cannot be overtaken by a broadcast that lands
@@ -6664,8 +6691,53 @@ async def voice_handler(ws: WebSocket):
             _last_greeting_time = time.time()
             await speech.say(_greeting(), Priority.NORMAL)
 
+        if terminal_mode:
+            async def _on_interim(text: str) -> None:
+                if speech is not None:
+                    await speech.user_interim(text)
+                _enqueue(queue, {"type": "transcript_echo", "text": text, "isFinal": False})
+
+            async def _on_final(text: str) -> None:
+                text = apply_speech_corrections(text.strip())
+                if not text or speech is None:
+                    return
+                _enqueue(queue, {"type": "transcript_echo", "text": text, "isFinal": True})
+                verdict = await speech.user_final(text)
+                if verdict == "replay":
+                    log.info(f"User (replay): {text}")
+                    if not await speech.replay_last():
+                        await speech.say(NOTHING_TO_REPLAY_LINE, Priority.NORMAL)
+                    return
+                if verdict != "speech":
+                    log.info(f"User ({verdict}, ignored): {text}")
+                    return
+                log.info(f"User: {text}")
+                if _is_fresh_start(text):
+                    _spawn(_start_fresh())
+                    return
+                _spawn(_handle_utterance(text))
+
+            async def _on_transcribe_error(msg: str) -> None:
+                log.warning(f"terminal transcription: {msg}")
+
+            transcriber = gemini_transcribe.GeminiTranscriber(_on_interim, _on_final, _on_transcribe_error)
+            if not await transcriber.start():
+                _enqueue(queue, {"type": "text",
+                                 "text": "I couldn't reach speech transcription, sir — "
+                                         "check GEMINI_API_KEY."})
+                transcriber = None
+
         while True:
-            raw = await ws.receive_text()
+            frame = await ws.receive()
+            if frame.get("type") == "websocket.disconnect":
+                break
+            if "bytes" in frame and frame["bytes"] is not None:
+                if transcriber is not None:
+                    await transcriber.send_audio(frame["bytes"])
+                continue
+            raw = frame.get("text")
+            if raw is None:
+                continue
             try:
                 msg = json.loads(raw)
             except json.JSONDecodeError:
@@ -6747,6 +6819,8 @@ async def voice_handler(ws: WebSocket):
     except Exception as e:
         log.error(f"WebSocket error: {e}", exc_info=True)
     finally:
+        if transcriber is not None:
+            await transcriber.stop()
         _drop_voice_client(ws)
 
 
@@ -6764,6 +6838,7 @@ async def voice_handler(ws: WebSocket):
 # a restart.
 SETTABLE_ENV_KEYS = frozenset({
     "FISH_API_KEY", "FISH_VOICE_ID", "USER_NAME", "HONORIFIC",
+    "GEMINI_API_KEY", "JARVIS_SPEECH_LANG",
 })
 
 # A value may not carry anything that ends the line it is written on.

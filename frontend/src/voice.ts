@@ -76,6 +76,17 @@ const SPEECH_LEVEL = 0.02;
 // failing, not the user being quiet.
 const DEAF_AFTER_MS = 3000;
 
+// Speech recognition language. Chrome's SpeechRecognition hands the audio to
+// Google's recognition service, which supports Uzbek (uz-UZ) as a real
+// language — this was hard-coded to "en-US" before, which meant Uzbek speech
+// was transcribed AS English and came back as garbage regardless of what was
+// said. Baked into the build via Vite's `define` (see vite.config.ts) rather
+// than read from `import.meta.env` at runtime, because this file has no
+// access to server-side .env; set JARVIS_SPEECH_LANG in the project root
+// .env to override (defaults to "uz-UZ").
+declare const __JARVIS_SPEECH_LANG__: string;
+const SPEECH_LANG = (typeof __JARVIS_SPEECH_LANG__ !== "undefined" && __JARVIS_SPEECH_LANG__) || "uz-UZ";
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 declare const webkitSpeechRecognition: any;
 
@@ -229,7 +240,7 @@ export function createVoiceInput(
     const sr = new SR();
     sr.continuous = true;
     sr.interimResults = true;
-    sr.lang = "en-US";
+    sr.lang = SPEECH_LANG;
     const e: Engine = { sr, running: false, audio: false, startedAt: 0, stoppedAt: 0, retired: false };
 
     sr.onstart = () => {
